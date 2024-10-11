@@ -8,13 +8,11 @@ SEP = 50 * '-'
 # hyperparameters ----------------------------------------------------------------------------------
 batch_size = 32  # how many independent sequences will we process in parallel
 block_size = 8  # what i sthe maximum context length for predictions
-max_iters = 5000  # how many iterations to train for
-eval_interval = 500  # how often to evaluate the model
-learning_rage = 1e-3  # how fast we update the weights, self-attention cannot tolerate high learning rates
+max_iters = 3000  # how many iterations to train for
+eval_interval = 300  # how often to evaluate the model
+learning_rate = 1e-2  # how fast we update the weights
 device = 'cuda' if torch.cuda.is_available() else 'cpu'  # check if GPU is available
 eval_iters = 200  # how many batches to average for evaluation
-n_embd = 32  # number of embedding dimensions
-# head_size = 16  # size of the self-attention heads
 
 # dataset ------------------------------------------------------------------------------------------
 dataset_path = 'dataset/tiny-lafontaine.txt'
@@ -45,6 +43,7 @@ def get_batch(split):
     ix = torch.randint(len(data) - block_size, (batch_size,))  # sample random starting indices for the sequences
     x = torch.stack([data[i: i + block_size] for i in ix])  # create a batch of context windows
     y = torch.stack([data[i + 1:i + block_size + 1] for i in ix])  # create a batch of targets, one step forward
+    x, y = x.to(device), y.to(device)  # move the data to the device
     return x, y
 
 
@@ -63,60 +62,26 @@ def estimate_loss():
     return out  # return the losses
 
 
-# self-attention head ------------------------------------------------------------------------------
-class Head(nn.Module):
-
-    def __init__(self, head_size):
-        super().__init__()
-        self.key = nn.Linear(n_embd, head_size, bias=False)  # key projection
-        self.query = nn.Linear(n_embd, head_size, bias=False)  # query projection
-        self.value = nn.Linear(n_embd, head_size, bias=False)  # value projection
-        self.register_buffer('tril', torch.tril(torch.ones(block_size, block_size)))  # causal mask
-
-    def forward(self, x):
-        B, T, C = x.shape
-        k = self.key(x)  # (B, T, C)
-        q = self.query(x)  # (B, T, C)
-        # compute attention scores ("affinities")
-        wei = q @ k.transpose(-2, -1) * C**-0.5  # (B, T, T) @ (B, C, T) -> (B, T, T)
-        wei = wei.masked_fill(self.tril[:T, :T] == 0, float('-inf'))  # (B, T, T)
-        wei = F.softmax(wei, dim=-1)  # (B, T, T)
-        # perform the weighted aggregation of the values
-        v = self.value(x)
-        out = wei @ v  # (B, T, T) @ (B, T, C) -> (B, T, C)
-        return out
-
 # simple bigram model ------------------------------------------------------------------------------
 class BigramLanguageModel(nn.Module):
 
-    def __init__(self):
+    def __init__(self, vocab_size):
         super().__init__()
         # each token directly reads off the logits from the next token from a lookup table
-        self.token_embedding_table = nn.Embedding(vocab_size, n_embd)  # token embeddings
-        self.position_embedding_table = nn.Embedding(block_size, n_embd)  # positional embeddings
-        self.sa_head = Head(n_embd)  # self-attention head
-        self.lm_head = nn.Linear(n_embd, vocab_size)  # output layer
+        self.token_embedding_table = nn.Embedding(vocab_size, vocab_size)  # token embeddings
 
     def forward(self, idx, targets=None):
-        B, T = idx.shape
 
         # idx and targets are both (B, T) tensors of integers
-        tok_emb = self.token_embedding_table(idx)  # (B, T, C) = Batch, Time (block_size), Channels (vocab_size)
-        pos_emb = self.position_embedding_table(torch.arange(T, device=idx.device))  # (T, C)
-        x = tok_emb + pos_emb  # (B, T, C)
-        x = self.sa_head(x)  # apply one head of self-attention. (B, T, C)
-        logits = self.lm_head(x)  # decoder head (B, T, vocab_size)
+        logits = self.token_embedding_table(idx)  # (B, T, C) = Batch, Time (block_size), Channels (vocab_size)
 
         if targets is None:
             loss = None
-
         else:
             # reshape the logits to be (B*T, C) and the targets to be (B*T) so we can compute the loss
             B, T, C = logits.shape  # unpack batch, time, channels
-            logits = logits.view(B*T, C)  # flatten the Time and Batch dimensions
-            targets = targets.view(B*T)
-
-            # compute the loss using cross entropy = quality of the logicts in respect to the targets
+            logits = logits.view(B * T, C)  # flatten the Time and Batch dimensions
+            targets = targets.view(B * T)
             loss = F.cross_entropy(logits, targets)
 
         return logits, loss
@@ -140,11 +105,11 @@ class BigramLanguageModel(nn.Module):
         return idx
 
 
-model = BigramLanguageModel()
+model = BigramLanguageModel(vocab_size)
 m = model.to(device)
 
 # create a PyTorch optimizer
-optimizer = torch.optim.AdamW(m.parameters(), lr=1e-3)  # AdamW is a good optimizer for transformers
+optimizer = torch.optim.AdamW(m.parameters(), lr=learning_rate)  # AdamW is a good optimizer for transformers
 
 # training loop ------------------------------------------------------------------------------------
 for iter in range(max_iters):
