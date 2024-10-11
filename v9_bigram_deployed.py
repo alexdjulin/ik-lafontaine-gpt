@@ -1,5 +1,6 @@
 import os
-import torch 
+import torch
+import onnx
 import torch.nn as nn
 from torch.nn import functional as F
 from datetime import datetime
@@ -148,14 +149,15 @@ class Block(nn.Module):
 # simple bigram model ------------------------------------------------------------------------------
 class BigramLanguageModel(nn.Module):
 
-    def __init__(self):
+    def __init__(self, config):
         super().__init__()
-        # each token directly reads off the logits from the next token from a lookup table
-        self.token_embedding_table = nn.Embedding(vocab_size, n_embd)  # token embeddings
-        self.position_embedding_table = nn.Embedding(block_size, n_embd)  # positional embeddings
-        self.blocks = nn.Sequential(*[Block(n_embd, n_head=n_head) for _ in range(n_layer)])  # stack of transformer blocks
-        self.ln_f = nn.LayerNorm(n_embd),  # final layer normalization
-        self.lm_head = nn.Linear(n_embd, vocab_size)  # output layer
+        self.token_embedding_table = nn.Embedding(config.vocab_size, config.n_embd)
+        self.position_embedding_table = nn.Embedding(256, config.n_embd)
+        self.blocks = nn.Sequential(
+            *[Block(config.n_embd, config.n_head) for _ in range(config.n_layer)]
+        )
+        self.ln_f = nn.LayerNorm(config.n_embd)
+        self.lm_head = nn.Linear(config.n_embd, config.vocab_size)
 
     def forward(self, idx, targets=None):
         B, T = idx.shape
@@ -230,6 +232,9 @@ def train_model():
     context = torch.zeros((1, 1), dtype=torch.long, device=device)  # initialize context to be a single token
     print(decode(m.generate(context, max_new_tokens=500)[0].tolist()))  # generate 100 new tokens
 
+    # save model
+    save_model(model)
+
     return m
 
 
@@ -274,17 +279,25 @@ def run_inference(model, max_tokens=500):
     return generated_text
 
 
-if __name__ == '__main__':
+# export model to onnx format ----------------------------------------------------------------------
+def export_onnx_model(pt_model, onnx_path):
+    try:
+        # Dummy input tensor of the same shape as your training input
+        dummy_input = torch.zeros((1, 256), dtype=torch.long).to(device)  # Example input shape
 
-    # train model
-    # model = train_model()
+        # Export the model to ONNX format
+        torch.onnx.export(
+            pt_model,  # your trained model
+            dummy_input,  # example input tensor
+            onnx_path,  # output file path
+            input_names=["input"],  # input layer names
+            output_names=["output"],  # output layer names
+            dynamic_axes={"input": {0: "batch_size"}, "output": {0: "batch_size"}},  # dynamic axis support
+            opset_version=13  # compatibility with latest ONNX version
+        )
 
-    # save model
-    # model_path = save_model(model)
+        print(f"Model exported to {onnx_path}.")
 
-    # load model and run inference
-    model_path = 'models/lafontaine_gpt_v8_241011_1307.pth'
-    model = load_model(model_path)
-    generated_text = run_inference(model)
-    print(SEP)
-    print(generated_text)
+    except Exception as e:
+        print(f"Error exporting the onnx model: {e}")
+
